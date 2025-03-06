@@ -1,0 +1,43 @@
+{
+    "Targets": [
+        {
+            "Type": "Process",
+            "Name": "app.exe",
+            "ProcessId": null,
+            "Path": "E:\\path\\to\\the\\app.exe"
+        },
+        {
+            "Type": "Directory",
+            "Path": "E:\\path\\to\\the\\Directory",
+            "Recursive": true
+        },
+        {
+            "Type": "File", 
+            "Path": "E:\\path\\to\\the\\file.exe"
+        }
+    ],
+    "Logging": {
+        "LogPath": "E:\\Adblock-Proj\\WD-Settings",
+        "LogFormat": "TextAndDatabase",
+        "LogLevel": "Information"
+    },
+    "Requests": {
+        "AllowedRequestTypes": [
+            "GET", 
+            "POST", 
+            "PUT",
+            "DELETE",
+            "PATCH",
+            "HEAD",
+            "OPTIONS",
+            "CONNECT",
+            "TRACE"
+        ],
+        "MonitoringDelayMs": 500,
+        "MaxLogEntries": 5000
+    },
+    "Database": {
+        "ConnectionString": "Server=myServerAddress;Database=myDataBase;User Id=myUsername;Password=myPassword;",
+        "EnableLogging": true
+    }
+}
