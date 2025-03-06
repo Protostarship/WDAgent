@@ -9,7 +9,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient; // Ensure Microsoft.Data.SqlClient is referenced via NuGet
 using Newtonsoft.Json;
 using System.Reflection;
 
@@ -43,20 +43,20 @@ namespace ProcessWatchdog
         Warning,
         Error
     }
-    
+
     public class WatchdogEntry
     {
         public DateTime Timestamp { get; set; }
         public RequestType RequestType { get; set; }
-        public string RequestCode { get; set; }
+        public string RequestCode { get; set; } = string.Empty;
         public long PayloadSize { get; set; }
-        public string OriginPath { get; set; }
-        public string DestinationPath { get; set; }
-        public string OriginDomain { get; set; }
-        public string DestinationDomain { get; set; }
-        public string OriginRegion { get; set; }
-        public string DestinationRegion { get; set; }
-        public string Status { get; set; }
+        public string OriginPath { get; set; } = string.Empty;
+        public string DestinationPath { get; set; } = string.Empty;
+        public string OriginDomain { get; set; } = string.Empty;
+        public string DestinationDomain { get; set; } = string.Empty;
+        public string OriginRegion { get; set; } = string.Empty;
+        public string DestinationRegion { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
         public TimeSpan Latency { get; set; } = TimeSpan.Zero;
 
         public override string ToString()
@@ -83,17 +83,18 @@ namespace ProcessWatchdog
 
     public class TargetConfig
     {
-        public string Type { get; set; } // "Process", "File", "Directory"
-        public string Name { get; set; }
+        // Allowed values: "Process", "File", "Directory"
+        public string Type { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
         public int? ProcessId { get; set; }
-        public string Path { get; set; }
+        public string Path { get; set; } = string.Empty;
         public bool Recursive { get; set; } = false;
         public Dictionary<string, string> AdditionalParams { get; set; } = new Dictionary<string, string>();
     }
 
     public class LoggingConfig
     {
-        public string LogPath { get; set; } = @"WD-Settings";
+        public string LogPath { get; set; } = @"WD-Settings\\logs";
         public LogFormat LogFormat { get; set; } = LogFormat.TextAndDatabase;
         public LogLevel LogLevel { get; set; } = LogLevel.Information;
         public bool LogRotation { get; set; } = true;
@@ -102,8 +103,8 @@ namespace ProcessWatchdog
 
     public class RequestConfig
     {
-        public List<RequestType> AllowedRequestTypes { get; set; } = new List<RequestType>();
-        public int MonitoringDelayMs { get; set; } = 1000; // Default 1 second
+        public List<RequestType> AllowedRequestTypes { get; set; } = Enum.GetValues(typeof(RequestType)).Cast<RequestType>().ToList();
+        public int MonitoringDelayMs { get; set; } = 1000;
         public int MaxLogEntries { get; set; } = 10000;
         public bool EnableFiltering { get; set; } = false;
         public List<string> FilterPatterns { get; set; } = new List<string>();
@@ -111,7 +112,7 @@ namespace ProcessWatchdog
 
     public class DatabaseConfig
     {
-        public string ConnectionString { get; set; }
+        public string ConnectionString { get; set; } = string.Empty;
         public bool EnableLogging { get; set; } = false;
         public string TableName { get; set; } = "WatchdogLogs";
         public int BatchSize { get; set; } = 100;
@@ -121,18 +122,18 @@ namespace ProcessWatchdog
     #region Core Watchdog Implementation
     public class ProcessWatchdog
     {
-        private WatchdogConfiguration _configuration;
-        private ConcurrentQueue<WatchdogEntry> _logQueue;
-        private List<FileSystemWatcher> _fileWatchers;
-        private List<Process> _monitoredProcesses;
+        private WatchdogConfiguration _configuration = new WatchdogConfiguration();
+        private readonly ConcurrentQueue<WatchdogEntry> _logQueue;
+        private readonly List<FileSystemWatcher> _fileWatchers;
+        private readonly List<Process> _monitoredProcesses;
         private CancellationToken _cancellationToken;
-        private Task _logProcessingTask;
-        private Task _statisticsTask;
+        private Task? _logProcessingTask;
+        private Task? _statisticsTask;
         private DateTime _startTime;
         private int _totalLogEntries = 0;
-        private object _lockObject = new object();
+        private readonly object _lockObject = new object();
         private bool _isRunning = false;
-        
+
         // Statistics counters
         public int ProcessEventsDetected { get; private set; } = 0;
         public int FileEventsDetected { get; private set; } = 0;
@@ -145,8 +146,7 @@ namespace ProcessWatchdog
             _logQueue = new ConcurrentQueue<WatchdogEntry>();
             _fileWatchers = new List<FileSystemWatcher>();
             _monitoredProcesses = new List<Process>();
-            
-            // Initialize request type counts
+
             foreach (RequestType type in Enum.GetValues(typeof(RequestType)))
             {
                 RequestTypeCounts[type] = 0;
@@ -166,9 +166,7 @@ namespace ProcessWatchdog
                 }
 
                 string configJson = File.ReadAllText(configPath);
-                _configuration = JsonConvert.DeserializeObject<WatchdogConfiguration>(configJson);
-                
-                // Validate and set defaults for any missing properties
+                _configuration = JsonConvert.DeserializeObject<WatchdogConfiguration>(configJson) ?? CreateDefaultConfiguration();
                 ValidateConfiguration();
             }
             catch (Exception ex)
@@ -177,7 +175,7 @@ namespace ProcessWatchdog
                 _configuration = CreateDefaultConfiguration();
             }
         }
-        
+
         private WatchdogConfiguration CreateDefaultConfiguration()
         {
             return new WatchdogConfiguration
@@ -187,10 +185,7 @@ namespace ProcessWatchdog
                     new TargetConfig { Type = "Process", Name = "explorer" }
                 },
                 Logging = new LoggingConfig(),
-                Requests = new RequestConfig 
-                { 
-                    AllowedRequestTypes = Enum.GetValues(typeof(RequestType)).Cast<RequestType>().ToList() 
-                },
+                Requests = new RequestConfig(),
                 Database = new DatabaseConfig()
             };
         }
@@ -199,15 +194,14 @@ namespace ProcessWatchdog
         {
             try
             {
-                string directory = Path.GetDirectoryName(configPath);
+                string directory = Path.GetDirectoryName(configPath) ?? string.Empty;
                 if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 {
                     Directory.CreateDirectory(directory);
                 }
-                
+
                 string configJson = JsonConvert.SerializeObject(_configuration, Formatting.Indented);
                 File.WriteAllText(configPath, configJson);
-                
                 WriteColoredLine("Configuration saved successfully.", ConsoleColor.Green);
             }
             catch (Exception ex)
@@ -218,20 +212,14 @@ namespace ProcessWatchdog
 
         private void ValidateConfiguration()
         {
-            // Ensure logging path exists
             if (_configuration.Logging != null)
             {
                 Directory.CreateDirectory(_configuration.Logging.LogPath);
             }
 
-            // Set default request types if not specified
-            if (_configuration.Requests?.AllowedRequestTypes == null 
-                || _configuration.Requests.AllowedRequestTypes.Count == 0)
+            if (_configuration.Requests?.AllowedRequestTypes == null || _configuration.Requests.AllowedRequestTypes.Count == 0)
             {
-                _configuration.Requests.AllowedRequestTypes = Enum
-                    .GetValues(typeof(RequestType))
-                    .Cast<RequestType>()
-                    .ToList();
+                _configuration.Requests.AllowedRequestTypes = Enum.GetValues(typeof(RequestType)).Cast<RequestType>().ToList();
             }
         }
 
@@ -245,7 +233,6 @@ namespace ProcessWatchdog
 
             try
             {
-                // Verify elevated privileges
                 if (!IsRunAsAdministrator())
                 {
                     WriteColoredLine("Application must be run with administrator privileges!", ConsoleColor.Red);
@@ -256,7 +243,6 @@ namespace ProcessWatchdog
                 _startTime = DateTime.Now;
                 _isRunning = true;
 
-                // Start monitoring configured targets
                 foreach (var target in _configuration.Targets)
                 {
                     try
@@ -280,10 +266,7 @@ namespace ProcessWatchdog
                     }
                 }
 
-                // Start logging task
                 _logProcessingTask = Task.Run(() => ProcessLogQueue(), _cancellationToken);
-                
-                // Start statistics task
                 _statisticsTask = Task.Run(() => CollectStatistics(), _cancellationToken);
 
                 WriteColoredLine($"Watchdog Started. Monitoring {_configuration.Targets.Count} targets.", ConsoleColor.Green);
@@ -306,19 +289,17 @@ namespace ProcessWatchdog
             }
 
             _isRunning = false;
-            
-            // Clean up file watchers
+
             foreach (var watcher in _fileWatchers)
             {
                 watcher.EnableRaisingEvents = false;
                 watcher.Dispose();
             }
             _fileWatchers.Clear();
-            
-            // Log process terminations and clear list
+
             foreach (var process in _monitoredProcesses)
             {
-                try 
+                try
                 {
                     if (!process.HasExited)
                     {
@@ -328,17 +309,14 @@ namespace ProcessWatchdog
                 catch { }
             }
             _monitoredProcesses.Clear();
-            
-            // Process remaining log entries (auto-save)
-            ProcessRemainingLogs();
 
+            ProcessRemainingLogs();
             WriteColoredLine("Watchdog stopped. All monitoring ceased.", ConsoleColor.Yellow);
         }
 
         private void ProcessRemainingLogs()
         {
             WriteColoredLine("Processing remaining log entries...", ConsoleColor.Blue);
-            
             while (!_logQueue.IsEmpty)
             {
                 if (_logQueue.TryDequeue(out var entry))
@@ -395,8 +373,6 @@ namespace ProcessWatchdog
             foreach (var process in processes)
             {
                 _monitoredProcesses.Add(process);
-
-                // Create process exit watcher
                 Task.Run(() =>
                 {
                     try
@@ -425,32 +401,25 @@ namespace ProcessWatchdog
             }
 
             string filePath = target.Path;
-            
             if (!File.Exists(filePath))
             {
                 WriteColoredLine($"File not found: {filePath}", ConsoleColor.Yellow);
-                
-                // Watch for file creation if it doesn't exist yet
-                string directory = Path.GetDirectoryName(filePath);
-                if (!Directory.Exists(directory))
+                string? directory = Path.GetDirectoryName(filePath);
+                if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
                 {
                     WriteColoredLine($"Directory does not exist: {directory}", ConsoleColor.Red);
                     return;
                 }
-                
+
                 string fileName = Path.GetFileName(filePath);
                 var watcher = new FileSystemWatcher(directory, fileName)
                 {
-                    NotifyFilter = NotifyFilters.LastWrite 
-                        | NotifyFilters.FileName 
-                        | NotifyFilters.Size
-                        | NotifyFilters.CreationTime
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.CreationTime
                 };
 
                 watcher.Created += OnFileChanged;
                 watcher.EnableRaisingEvents = true;
                 _fileWatchers.Add(watcher);
-                
                 WriteColoredLine($"Watching for creation of file: {filePath}", ConsoleColor.Cyan);
                 return;
             }
@@ -458,20 +427,15 @@ namespace ProcessWatchdog
             var fileInfo = new FileInfo(filePath);
             var fileWatcher = new FileSystemWatcher(fileInfo.DirectoryName, fileInfo.Name)
             {
-                NotifyFilter = NotifyFilters.LastWrite 
-                    | NotifyFilters.FileName 
-                    | NotifyFilters.Size 
-                    | NotifyFilters.Attributes
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.Attributes
             };
 
             fileWatcher.Changed += OnFileChanged;
             fileWatcher.Created += OnFileChanged;
             fileWatcher.Deleted += OnFileChanged;
             fileWatcher.Renamed += OnFileChanged;
-
             fileWatcher.EnableRaisingEvents = true;
             _fileWatchers.Add(fileWatcher);
-            
             WriteColoredLine($"Watching file: {filePath}", ConsoleColor.Cyan);
         }
 
@@ -485,11 +449,7 @@ namespace ProcessWatchdog
 
             var watcher = new FileSystemWatcher(target.Path)
             {
-                NotifyFilter = NotifyFilters.LastWrite 
-                    | NotifyFilters.FileName 
-                    | NotifyFilters.DirectoryName
-                    | NotifyFilters.Size 
-                    | NotifyFilters.CreationTime,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.Size | NotifyFilters.CreationTime,
                 IncludeSubdirectories = target.Recursive
             };
 
@@ -497,35 +457,22 @@ namespace ProcessWatchdog
             watcher.Created += OnFileChanged;
             watcher.Deleted += OnFileChanged;
             watcher.Renamed += OnFileChanged;
-
             watcher.EnableRaisingEvents = true;
             _fileWatchers.Add(watcher);
-            
-            WriteColoredLine($"Watching directory: {target.Path} {(target.Recursive ? "(including subdirectories)" : "")}", ConsoleColor.Cyan);
+            WriteColoredLine($"Watching directory: {target.Path} {(target.Recursive ? "(including subdirectories)" : string.Empty)}", ConsoleColor.Cyan);
         }
 
         private void OnFileChanged(object sender, FileSystemEventArgs e)
         {
-            // Increase file events counter
             Interlocked.Increment(ref FileEventsDetected);
-            
+
             if (_configuration.Requests.EnableFiltering)
             {
-                // Check if the path matches any filter pattern
-                bool filtered = false;
-                foreach (var pattern in _configuration.Requests.FilterPatterns)
-                {
-                    if (e.FullPath.Contains(pattern))
-                    {
-                        filtered = true;
-                        break;
-                    }
-                }
-                
-                if (filtered) return;
+                bool filtered = _configuration.Requests.FilterPatterns.Any(pattern => e.FullPath.Contains(pattern));
+                if (filtered)
+                    return;
             }
-            
-            // Calculate basic file information
+
             long fileSize = 0;
             try
             {
@@ -539,13 +486,12 @@ namespace ProcessWatchdog
             var entry = new WatchdogEntry
             {
                 Timestamp = DateTime.Now,
-                RequestType = RequestType.GET, // Default for file events
+                RequestType = RequestType.GET,
                 OriginPath = e.FullPath,
                 Status = e.ChangeType.ToString(),
                 PayloadSize = fileSize
             };
-            
-            // Determine if this is a database file based on its extension
+
             if (e.FullPath.EndsWith(".mdf", StringComparison.OrdinalIgnoreCase) ||
                 e.FullPath.EndsWith(".ldf", StringComparison.OrdinalIgnoreCase) ||
                 e.FullPath.EndsWith(".ndf", StringComparison.OrdinalIgnoreCase) ||
@@ -556,36 +502,30 @@ namespace ProcessWatchdog
             }
 
             _logQueue.Enqueue(entry);
-            
-            // Update request type count
-            Interlocked.Increment(ref RequestTypeCounts[entry.RequestType]);
+            lock (RequestTypeCounts)
+            {
+                RequestTypeCounts[entry.RequestType] = RequestTypeCounts[entry.RequestType] + 1;
+            }
         }
 
         private RequestType DetermineRequestTypeFromFileOperation(WatcherChangeTypes changeType)
         {
-            switch (changeType)
+            return changeType switch
             {
-                case WatcherChangeTypes.Created:
-                    return RequestType.POST;
-                case WatcherChangeTypes.Changed:
-                    return RequestType.PUT;
-                case WatcherChangeTypes.Deleted:
-                    return RequestType.DELETE;
-                case WatcherChangeTypes.Renamed:
-                    return RequestType.PATCH;
-                default:
-                    return RequestType.GET;
-            }
+                WatcherChangeTypes.Created => RequestType.POST,
+                WatcherChangeTypes.Changed => RequestType.PUT,
+                WatcherChangeTypes.Deleted => RequestType.DELETE,
+                WatcherChangeTypes.Renamed => RequestType.PATCH,
+                _ => RequestType.GET,
+            };
         }
 
         private void LogProcessTermination(Process process)
         {
-            // Increase process events counter
             Interlocked.Increment(ref ProcessEventsDetected);
-            
             string processName = "Unknown";
             string filePath = "Unknown";
-            
+
             try
             {
                 processName = process.ProcessName;
@@ -604,10 +544,11 @@ namespace ProcessWatchdog
             };
 
             _logQueue.Enqueue(entry);
-            
-            // Update request type count
-            Interlocked.Increment(ref RequestTypeCounts[RequestType.DELETE]);
-            
+            lock (RequestTypeCounts)
+            {
+                RequestTypeCounts[RequestType.DELETE] = RequestTypeCounts[RequestType.DELETE] + 1;
+            }
+
             WriteColoredLine($"Process terminated: {processName} (PID: {process.Id})", ConsoleColor.Yellow);
         }
 
@@ -621,7 +562,6 @@ namespace ProcessWatchdog
 
                 while (processedCount < maxPerBatch && _logQueue.TryDequeue(out var entry))
                 {
-                    // Only log if request type is allowed
                     if (_configuration.Requests.AllowedRequestTypes.Contains(entry.RequestType))
                     {
                         LogEntry(entry);
@@ -630,7 +570,6 @@ namespace ProcessWatchdog
                     }
                 }
 
-                // Sleep for the configured delay to control processing rate
                 if (!_cancellationToken.IsCancellationRequested)
                 {
                     Thread.Sleep(processingDelay);
@@ -642,9 +581,8 @@ namespace ProcessWatchdog
         {
             while (!_cancellationToken.IsCancellationRequested && _isRunning)
             {
-                // Sleep for 5 seconds between stats updates
                 Thread.Sleep(5000);
-                // Additional statistics collection can be implemented here if needed.
+                // Detailed statistics collection could be added here if desired.
             }
         }
 
@@ -652,17 +590,15 @@ namespace ProcessWatchdog
         {
             try
             {
-                // Log to file if configured
-                if (_configuration.Logging.LogFormat == LogFormat.TextOnly 
-                    || _configuration.Logging.LogFormat == LogFormat.TextAndDatabase)
+                if (_configuration.Logging.LogFormat == LogFormat.TextOnly ||
+                    _configuration.Logging.LogFormat == LogFormat.TextAndDatabase)
                 {
                     LogToFile(entry);
                 }
 
-                // Log to database if configured
-                if ((_configuration.Logging.LogFormat == LogFormat.DatabaseOnly 
-                     || _configuration.Logging.LogFormat == LogFormat.TextAndDatabase)
-                    && _configuration.Database.EnableLogging)
+                if ((_configuration.Logging.LogFormat == LogFormat.DatabaseOnly ||
+                    _configuration.Logging.LogFormat == LogFormat.TextAndDatabase) &&
+                    _configuration.Database.EnableLogging)
                 {
                     LogToDatabase(entry);
                 }
@@ -676,7 +612,7 @@ namespace ProcessWatchdog
         private void LogToFile(WatchdogEntry entry)
         {
             string logFilePath = Path.Combine(
-                _configuration.Logging.LogPath, 
+                _configuration.Logging.LogPath,
                 $"watchdog_log_{DateTime.Now:yyyyMMdd}.txt"
             );
 
@@ -726,12 +662,12 @@ namespace ProcessWatchdog
                     cmd = new SqlCommand($@"
                         INSERT INTO {_configuration.Database.TableName}
                         (Timestamp, RequestType, RequestCode, PayloadSize, 
-                        OriginPath, DestinationPath, OriginDomain, DestinationDomain, 
-                        OriginRegion, DestinationRegion, Status, Latency) 
+                         OriginPath, DestinationPath, OriginDomain, DestinationDomain, 
+                         OriginRegion, DestinationRegion, Status, Latency) 
                         VALUES 
                         (@Timestamp, @RequestType, @RequestCode, @PayloadSize, 
-                        @OriginPath, @DestinationPath, @OriginDomain, @DestinationDomain, 
-                        @OriginRegion, @DestinationRegion, @Status, @Latency)", connection);
+                         @OriginPath, @DestinationPath, @OriginDomain, @DestinationDomain, 
+                         @OriginRegion, @DestinationRegion, @Status, @Latency)", connection);
 
                     cmd.Parameters.AddWithValue("@Timestamp", entry.Timestamp);
                     cmd.Parameters.AddWithValue("@RequestType", entry.RequestType.ToString());
@@ -745,7 +681,6 @@ namespace ProcessWatchdog
                     cmd.Parameters.AddWithValue("@DestinationRegion", (object)entry.DestinationRegion ?? DBNull.Value);
                     cmd.Parameters.AddWithValue("@Status", (object)entry.Status ?? DBNull.Value);
                     cmd.Parameters.AddWithValue("@Latency", entry.Latency.TotalMilliseconds);
-
                     cmd.ExecuteNonQuery();
                 }
             }
@@ -760,7 +695,7 @@ namespace ProcessWatchdog
             return new WindowsPrincipal(WindowsIdentity.GetCurrent())
                 .IsInRole(WindowsBuiltInRole.Administrator);
         }
-        
+
         public static void WriteColoredLine(string message, ConsoleColor color)
         {
             lock (Console.Out)
@@ -770,7 +705,7 @@ namespace ProcessWatchdog
                 Console.ResetColor();
             }
         }
-        
+
         public WatchdogStatistics GetStatistics()
         {
             return new WatchdogStatistics
@@ -807,26 +742,23 @@ namespace ProcessWatchdog
     #region CLI Interface
     public class WatchdogCLI
     {
-        private ProcessWatchdog _watchdog;
+        private readonly ProcessWatchdog _watchdog;
         private WatchdogConfiguration _configuration;
-        private CancellationTokenSource _cancellationTokenSource;
-        private string _configPath;
+        private CancellationTokenSource? _cancellationTokenSource;
+        private readonly string _configPath;
         private bool _isRunning = false;
         private bool _shouldExit = false;
-        private int _refreshRate = 1000; // milliseconds
-        private Timer _refreshTimer;
+        private readonly int _refreshRate = 1000; // milliseconds
+        private readonly Timer _refreshTimer;
 
         public WatchdogCLI(string configPath)
         {
             _configPath = configPath;
             LoadConfiguration(configPath);
             _watchdog = new ProcessWatchdog(configPath);
-            
-            // Set up console
+
             Console.Title = "Advanced Process Watchdog";
             Console.CursorVisible = false;
-            
-            // Start UI refresh timer (paused initially)
             _refreshTimer = new Timer(RefreshUI, null, Timeout.Infinite, _refreshRate);
         }
 
@@ -844,10 +776,7 @@ namespace ProcessWatchdog
                             new TargetConfig { Type = "Process", Name = "explorer" }
                         },
                         Logging = new LoggingConfig(),
-                        Requests = new RequestConfig
-                        {
-                            AllowedRequestTypes = Enum.GetValues(typeof(RequestType)).Cast<RequestType>().ToList()
-                        },
+                        Requests = new RequestConfig(),
                         Database = new DatabaseConfig()
                     };
                     SaveConfiguration(configPath);
@@ -855,11 +784,12 @@ namespace ProcessWatchdog
                 }
 
                 string configJson = File.ReadAllText(configPath);
-                _configuration = JsonConvert.DeserializeObject<WatchdogConfiguration>(configJson);
+                _configuration = JsonConvert.DeserializeObject<WatchdogConfiguration>(configJson) ?? new WatchdogConfiguration();
             }
             catch (Exception ex)
             {
                 WriteColoredLine("Configuration Error: " + ex.Message, ConsoleColor.Red);
+                _configuration = new WatchdogConfiguration();
             }
         }
 
@@ -867,15 +797,14 @@ namespace ProcessWatchdog
         {
             try
             {
-                string directory = Path.GetDirectoryName(configPath);
+                string directory = Path.GetDirectoryName(configPath) ?? string.Empty;
                 if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 {
                     Directory.CreateDirectory(directory);
                 }
-                
+
                 string configJson = JsonConvert.SerializeObject(_configuration, Formatting.Indented);
                 File.WriteAllText(configPath, configJson);
-                
                 WriteColoredLine("Configuration saved successfully.", ConsoleColor.Green);
             }
             catch (Exception ex)
@@ -888,8 +817,6 @@ namespace ProcessWatchdog
         {
             Console.Clear();
             DisplayHeader();
-
-            // Start the refresh timer
             _refreshTimer.Change(0, _refreshRate);
 
             while (!_shouldExit)
@@ -901,11 +828,8 @@ namespace ProcessWatchdog
                 }
                 Thread.Sleep(50);
             }
-            
-            // Stop refresh timer
-            _refreshTimer.Change(Timeout.Infinite, _refreshRate);
 
-            // If watchdog is running, ensure it stops and flushes remaining logs
+            _refreshTimer.Change(Timeout.Infinite, _refreshRate);
             if (_isRunning)
             {
                 StopWatchdog();
@@ -984,7 +908,7 @@ namespace ProcessWatchdog
             if (_isRunning)
             {
                 _watchdog.Stop();
-                _cancellationTokenSource.Cancel();
+                _cancellationTokenSource?.Cancel();
                 _isRunning = false;
                 WriteColoredLine("Watchdog stopped.", ConsoleColor.Yellow);
             }
@@ -995,7 +919,7 @@ namespace ProcessWatchdog
             DisplayHeader();
         }
 
-        private void RefreshUI(object state)
+        private void RefreshUI(object? state)
         {
             DisplayHeader();
         }
@@ -1024,7 +948,7 @@ namespace ProcessWatchdog
     {
         static void Main(string[] args)
         {
-            // Use the configuration file path (adjust as needed)
+            // Adjust configuration file path as needed.
             string configPath = "WD-Settings\\WDA-Config.json";
             var cli = new WatchdogCLI(configPath);
             cli.RunInteractiveCLI();
@@ -1032,4 +956,3 @@ namespace ProcessWatchdog
     }
     #endregion
 }
-
