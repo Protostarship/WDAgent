@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Microsoft.Data.SqlClient; // Ensure Microsoft.Data.SqlClient is referenced via NuGet
 using Newtonsoft.Json;
 using System.Reflection;
+using System.Runtime.Versioning; // For SupportedOSPlatform attribute
 
 namespace ProcessWatchdog
 {
@@ -94,7 +95,7 @@ namespace ProcessWatchdog
 
     public class LoggingConfig
     {
-        public string LogPath { get; set; } = @"WD-Settings\\logs";
+        public string LogPath { get; set; } = @"WD-Settings\logs";
         public LogFormat LogFormat { get; set; } = LogFormat.TextAndDatabase;
         public LogLevel LogLevel { get; set; } = LogLevel.Information;
         public bool LogRotation { get; set; } = true;
@@ -134,11 +135,18 @@ namespace ProcessWatchdog
         private readonly object _lockObject = new object();
         private bool _isRunning = false;
 
-        // Statistics counters
-        public int ProcessEventsDetected { get; private set; } = 0;
-        public int FileEventsDetected { get; private set; } = 0;
+        // Replace auto-properties with explicit backing fields
+        private int _processEventsDetected = 0;
+        public int ProcessEventsDetected => _processEventsDetected;
+
+        private int _fileEventsDetected = 0;
+        public int FileEventsDetected => _fileEventsDetected;
+
         public int NetworkEventsDetected { get; private set; } = 0;
-        public Dictionary<RequestType, int> RequestTypeCounts { get; private set; } = new Dictionary<RequestType, int>();
+
+        // Use a backing field for RequestTypeCounts and expose it as a read-only dictionary.
+        private readonly Dictionary<RequestType, int> _requestTypeCounts = new Dictionary<RequestType, int>();
+        public IReadOnlyDictionary<RequestType, int> RequestTypeCounts => _requestTypeCounts;
 
         public ProcessWatchdog(string configPath)
         {
@@ -149,7 +157,7 @@ namespace ProcessWatchdog
 
             foreach (RequestType type in Enum.GetValues(typeof(RequestType)))
             {
-                RequestTypeCounts[type] = 0;
+                _requestTypeCounts[type] = 0;
             }
         }
 
@@ -353,7 +361,7 @@ namespace ProcessWatchdog
             {
                 try
                 {
-                    Process process = Process.Start(target.Path);
+                    Process process = Process.Start(target.Path)!;
                     processes.Add(process);
                     WriteColoredLine($"Started and monitoring process from path: {target.Path}", ConsoleColor.Cyan);
                 }
@@ -425,7 +433,7 @@ namespace ProcessWatchdog
             }
 
             var fileInfo = new FileInfo(filePath);
-            var fileWatcher = new FileSystemWatcher(fileInfo.DirectoryName, fileInfo.Name)
+            var fileWatcher = new FileSystemWatcher(fileInfo.DirectoryName!, fileInfo.Name)
             {
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.Attributes
             };
@@ -464,7 +472,7 @@ namespace ProcessWatchdog
 
         private void OnFileChanged(object sender, FileSystemEventArgs e)
         {
-            Interlocked.Increment(ref FileEventsDetected);
+            Interlocked.Increment(ref _fileEventsDetected);
 
             if (_configuration.Requests.EnableFiltering)
             {
@@ -502,9 +510,9 @@ namespace ProcessWatchdog
             }
 
             _logQueue.Enqueue(entry);
-            lock (RequestTypeCounts)
+            lock (_requestTypeCounts)
             {
-                RequestTypeCounts[entry.RequestType] = RequestTypeCounts[entry.RequestType] + 1;
+                _requestTypeCounts[entry.RequestType] = _requestTypeCounts[entry.RequestType] + 1;
             }
         }
 
@@ -522,7 +530,7 @@ namespace ProcessWatchdog
 
         private void LogProcessTermination(Process process)
         {
-            Interlocked.Increment(ref ProcessEventsDetected);
+            Interlocked.Increment(ref _processEventsDetected);
             string processName = "Unknown";
             string filePath = "Unknown";
 
@@ -544,9 +552,9 @@ namespace ProcessWatchdog
             };
 
             _logQueue.Enqueue(entry);
-            lock (RequestTypeCounts)
+            lock (_requestTypeCounts)
             {
-                RequestTypeCounts[RequestType.DELETE] = RequestTypeCounts[RequestType.DELETE] + 1;
+                _requestTypeCounts[RequestType.DELETE] = _requestTypeCounts[RequestType.DELETE] + 1;
             }
 
             WriteColoredLine($"Process terminated: {processName} (PID: {process.Id})", ConsoleColor.Yellow);
@@ -582,7 +590,7 @@ namespace ProcessWatchdog
             while (!_cancellationToken.IsCancellationRequested && _isRunning)
             {
                 Thread.Sleep(5000);
-                // Detailed statistics collection could be added here if desired.
+                // Additional detailed statistics collection could be added here.
             }
         }
 
@@ -690,10 +698,11 @@ namespace ProcessWatchdog
             }
         }
 
+        [SupportedOSPlatform("windows")]
         private static bool IsRunAsAdministrator()
         {
-            return new WindowsPrincipal(WindowsIdentity.GetCurrent())
-                .IsInRole(WindowsBuiltInRole.Administrator);
+            // Using null-forgiving operator (!) because GetCurrent() is expected to succeed on Windows.
+            return new WindowsPrincipal(WindowsIdentity.GetCurrent()!).IsInRole(WindowsBuiltInRole.Administrator);
         }
 
         public static void WriteColoredLine(string message, ConsoleColor color)
@@ -715,7 +724,7 @@ namespace ProcessWatchdog
                 FileEventsDetected = FileEventsDetected,
                 ProcessEventsDetected = ProcessEventsDetected,
                 NetworkEventsDetected = NetworkEventsDetected,
-                RequestTypeCounts = new Dictionary<RequestType, int>(RequestTypeCounts),
+                RequestTypeCounts = new Dictionary<RequestType, int>(_requestTypeCounts),
                 QueuedEvents = _logQueue.Count,
                 ActiveProcesses = _monitoredProcesses.Count,
                 ActiveFileWatchers = _fileWatchers.Count
